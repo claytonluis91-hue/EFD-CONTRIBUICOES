@@ -1,55 +1,60 @@
 import streamlit as st
 import pandas as pd
+import re
 from io import BytesIO
 
 st.set_page_config(page_title="Portal Fiscal - EFD", layout="wide")
 
 # Mapeamento oficial dos principais blocos da EFD Contribuições
+# Removidos caracteres especiais e acentos para evitar conflitos na exportação
 MAPA_BLOCOS = {
-    "0000": "Abertura e Identificação",
+    "0000": "Abertura e Identificacao",
     "0100": "Dados do Contabilista",
-    "0110": "Regimes de Apuração",
+    "0110": "Regimes de Apuracao",
     "0140": "Cadastro de Estabelecimento",
     "0150": "Cadastro de Participante",
     "0190": "Unidades de Medida",
-    "0200": "Identificação do Item",
-    "0400": "Natureza da Operação",
+    "0200": "Identificacao do Item",
+    "0400": "Natureza da Operacao",
     "0500": "Plano de Contas",
-    "A100": "NF de Serviço",
-    "A170": "Itens da NF de Serviço",
+    "A100": "NF de Servico",
+    "A170": "Itens da NF de Servico",
     "C010": "Identific. Estabelecimento",
-    "C100": "NF Entrada e Saída",
+    "C100": "NF Entrada e Saida",
     "C170": "Itens da NF",
-    "C180": "Consolidação de Notas",
-    "C190": "Consolidação de Notas",
+    "C180": "Consolidacao de Notas",
+    "C190": "Consolidacao de Notas",
     "C395": "Notas Fiscais de Venda",
     "C400": "Equipamento ECF",
-    "C405": "Redução Z",
-    "C500": "Energia/Água/Gás",
-    "D100": "Transporte e Comunicação",
-    "F100": "Demais Operações",
-    "F200": "Operações Imobiliárias",
-    "M200": "Apuração PIS",
+    "C405": "Reducao Z",
+    "C500": "Energia-Agua-Gas", # <-- Corrigido aqui (removida a barra)
+    "D100": "Transporte e Comunicacao",
+    "F100": "Demais Operacoes",
+    "F200": "Operacoes Imobiliarias",
+    "M200": "Apuracao PIS",
     "M400": "Receitas Isentas PIS",
-    "M600": "Apuração COFINS",
+    "M600": "Apuracao COFINS",
     "M800": "Receitas Isentas COFINS",
-    "1100": "Controle Créditos PIS",
-    "1500": "Controle Créditos COFINS",
+    "1100": "Controle Creditos PIS",
+    "1500": "Controle Creditos COFINS",
     "9900": "Totalizadores",
     "9999": "Encerramento"
 }
 
 def obter_nome_aba(reg_id):
-    """Retorna o nome da aba com limite de 31 caracteres para o Excel."""
+    """Retorna o nome da aba limpo e com limite de 31 caracteres para o Excel."""
     descricao = MAPA_BLOCOS.get(reg_id, f"Bloco_{reg_id}")
     nome_completo = f"{reg_id} - {descricao}"
-    return nome_completo[:31] # Corta no limite do Excel
+    
+    # Trava de Segurança: Remove qualquer caractere que o Excel não aceita
+    nome_limpo = re.sub(r'[\[\]:*?/\\]', '-', nome_completo)
+    
+    return nome_limpo[:31] # Corta no limite do Excel
 
 def parse_efd_to_dict(file_content):
     """Lê o TXT, parando no bloco 9999 e normalizando as colunas."""
     data_dict = {}
     
-    # errors='ignore' evita quebra com a assinatura digital binária
     lines = file_content.decode("latin-1", errors="ignore").splitlines()
     
     for linha in lines:
@@ -64,7 +69,6 @@ def parse_efd_to_dict(file_content):
                     data_dict[reg_id] = []
                 data_dict[reg_id].append(conteudo)
                 
-                # Trava para ignorar a assinatura digital no fim do arquivo
                 if reg_id == '9999':
                     break
     
@@ -90,7 +94,7 @@ def to_excel(dfs_dict):
             df.to_excel(writer, sheet_name=nome_aba, index=False)
             
             worksheet = writer.sheets[nome_aba]
-            worksheet.freeze_panes(1, 0) # Congela a primeira linha
+            worksheet.freeze_panes(1, 0)
             for i, col in enumerate(df.columns):
                 worksheet.set_column(i, i, 15)
                 
@@ -110,7 +114,6 @@ if arquivo_upload:
         if dfs_validados:
             st.success(f"Sucesso! {len(dfs_validados)} blocos extraídos e mapeados.")
             
-            # Botão de Download
             excel_data = to_excel(dfs_validados)
             st.download_button(
                 label="📥 Baixar Planilha Excel Formatada",
@@ -121,13 +124,12 @@ if arquivo_upload:
             
             st.divider()
             
-            # Criando uma lista mais amigável para o SelectBox
             opcoes_selectbox = {reg: obter_nome_aba(reg) for reg in dfs_validados.keys()}
             
             bloco_selecionado = st.selectbox(
                 "Selecione o bloco para conferência prévia:", 
                 options=sorted(dfs_validados.keys()),
-                format_func=lambda x: opcoes_selectbox[x] # Mostra o nome mapeado
+                format_func=lambda x: opcoes_selectbox[x]
             )
             
             if bloco_selecionado:
