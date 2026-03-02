@@ -2,68 +2,102 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
+# Configuração da página
 st.set_page_config(page_title="Leitor EFD Contribuições", layout="wide")
 
-def parse_efd_to_df(file_content):
-    """Lê o conteúdo do arquivo e retorna um dicionário de DataFrames por registro."""
+def parse_efd_to_dict(file_content):
+    """
+    Lê o conteúdo do arquivo TXT e agrupa os registros em um dicionário.
+    Cada chave é um bloco (ex: '0150') e o valor é uma lista de listas (linhas).
+    """
     data_dict = {}
     
-    # Decodifica o conteúdo do arquivo enviado
+    # Decodifica o conteúdo (usando latin-1 para evitar erro em caracteres especiais)
     lines = file_content.decode("latin-1").splitlines()
     
     for linha in lines:
+        # O SPED usa o pipe | como delimitador
         campos = linha.strip().split('|')
+        
+        # Registros válidos no SPED começam e terminam com |, gerando campos vazios nas pontas
         if len(campos) > 2:
-            reg = campos[1]
-            # Limpa os campos vazios das extremidades do split
-            dados = campos[1:-1]
+            registro_id = campos[1]
+            # Extraímos os dados entre os pipes principais
+            conteudo_registro = campos[1:-1]
             
-            if reg not in data_dict:
-                data_dict[reg] = []
-            data_dict[reg].append(dados)
-    
-    # Converte cada lista de registros em um DataFrame do Pandas
-    dfs = {reg: pd.DataFrame(lista) for reg, lista in data_dict.items()}
-    return dfs
+            if registro_id not in data_dict:
+                data_dict[registro_id] = []
+            
+            data_dict[registro_id].append(conteudo_registro)
+            
+    return data_dict
 
-def to_excel(dfs):
-    """Gera um arquivo Excel em memória com múltiplas abas."""
+def to_excel(data_dict):
+    """
+    Gera um arquivo Excel em memória com cada registro em uma aba separada.
+    """
     output = BytesIO()
+    # Engine xlsxwriter é ideal para manipular múltiplas abas e formatação
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for reg, df in dfs.items():
-            # Nome da aba no Excel (limite de 31 caracteres)
-            df.to_sheet_name = f"Registro_{reg}"
-            df.to_excel(writer, sheet_name=df.to_sheet_name, index=False, header=False)
+        for reg_id in sorted(data_dict.keys()):
+            # Criamos um DataFrame para o bloco específico
+            df = pd.DataFrame(data_dict[reg_id])
+            
+            # O Excel permite nomes de abas com no máximo 31 caracteres
+            nome_aba = f"Bloco_{reg_id}"
+            
+            # Exporta para o Excel sem o índice do pandas e sem cabeçalho (padrão SPED)
+            df.to_excel(writer, sheet_name=nome_aba, index=False, header=False)
+            
+            # Ajuste automático simples da largura das colunas
+            worksheet = writer.sheets[nome_aba]
+            for i, col in enumerate(df.columns):
+                worksheet.set_column(i, i, 18)
+                
     return output.getvalue()
 
-# Interface Streamlit
-st.title("📂 Analisador de EFD Contribuições")
-st.subheader("Extração de blocos e exportação para Excel")
+# --- Interface do Streamlit ---
 
-uploaded_file = st.file_uploader("Selecione o arquivo TXT da EFD", type=["txt"])
+st.title("📂 Analisador EFD Contribuições")
+st.markdown("Converta seu arquivo TXT para Excel com abas separadas por bloco de registro.")
 
-if uploaded_file:
-    with st.spinner('Processando arquivo...'):
-        # Processamento
-        conteudo = uploaded_file.read()
-        dict_dfs = parse_efd_to_df(conteudo)
+# Upload do arquivo
+arquivo_upload = st.file_uploader("Arraste seu arquivo TXT aqui", type=["txt"])
+
+if arquivo_upload:
+    with st.spinner('Processando os dados...'):
+        # 1. Lê e organiza os dados
+        conteudo = arquivo_upload.read()
+        registros_agrupados = parse_efd_to_dict(conteudo)
         
-        if dict_dfs:
-            st.success(f"Arquivo processado com sucesso! {len(dict_dfs)} tipos de registros encontrados.")
+        if registros_agrupados:
+            st.success(f"Sucesso! Identificamos {len(registros_agrupados)} tipos de registros diferentes.")
             
-            # Botão de Download para Excel
-            excel_data = to_excel(dict_dfs)
-            st.download_button(
-                label="📥 Baixar tudo em Excel (.xlsx)",
-                data=excel_data,
-                file_name=f"EFD_Processado_{uploaded_file.name}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            # 2. Prepara o Excel para download
+            dados_excel = to_excel(registros_agrupados)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.download_button(
+                    label="📥 Baixar Planilha Excel",
+                    data=dados_excel,
+                    file_name=f"Analise_{arquivo_upload.name.replace('.txt', '')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            
+            # 3. Visualização Prévia no Streamlit
+            st.divider()
+            st.subheader("Pré-visualização dos Blocos")
+            
+            escolha = st.selectbox(
+                "Selecione um registro para visualizar os dados:",
+                options=sorted(registros_agrupados.keys()),
+                format_func=lambda x: f"Registro {x}"
             )
             
-            # Visualização no Streamlit
-            st.divider()
-            registro_selecionado = st.selectbox("Selecione um registro para visualizar:", sorted(dict_dfs.keys()))
-            
-            if registro_selecionado:
-                st.write(f"Exibindo dados do Registro {registro_selecionado}")
-                st.dataframe(dict_dfs[registro_selecionado], use_container_width=True)
+            if escolha:
+                df_preview = pd.DataFrame(registros_agrupados[escolha])
+                st.dataframe(df_preview, use_container_width=True)
+        else:
+            st.error("Não foi possível identificar registros válidos no arquivo.")
