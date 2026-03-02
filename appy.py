@@ -2,102 +2,87 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-# Configuração da página
-st.set_page_config(page_title="Leitor EFD Contribuições", layout="wide")
+st.set_page_config(page_title="Portal Fiscal - EFD", layout="wide")
 
 def parse_efd_to_dict(file_content):
-    """
-    Lê o conteúdo do arquivo TXT e agrupa os registros em um dicionário.
-    Cada chave é um bloco (ex: '0150') e o valor é uma lista de listas (linhas).
-    """
+    """Lê o TXT e organiza os registros, normalizando o número de colunas."""
     data_dict = {}
-    
-    # Decodifica o conteúdo (usando latin-1 para evitar erro em caracteres especiais)
     lines = file_content.decode("latin-1").splitlines()
     
     for linha in lines:
-        # O SPED usa o pipe | como delimitador
         campos = linha.strip().split('|')
-        
-        # Registros válidos no SPED começam e terminam com |, gerando campos vazios nas pontas
         if len(campos) > 2:
-            registro_id = campos[1]
-            # Extraímos os dados entre os pipes principais
-            conteudo_registro = campos[1:-1]
+            reg_id = campos[1]
+            conteudo = campos[1:-1]
             
-            if registro_id not in data_dict:
-                data_dict[registro_id] = []
-            
-            data_dict[registro_id].append(conteudo_registro)
-            
-    return data_dict
+            if reg_id not in data_dict:
+                data_dict[reg_id] = []
+            data_dict[reg_id].append(conteudo)
+    
+    # Normalização: Garante que todas as linhas de um bloco tenham o mesmo número de colunas
+    dfs_prontos = {}
+    for reg, listas in data_dict.items():
+        max_cols = max(len(l) for l in listas)
+        # Preenche com string vazia as colunas faltantes
+        listas_normalizadas = [l + [''] * (max_cols - len(l)) for l in listas]
+        
+        # Cria o DataFrame com nomes de colunas genéricos (C0, C1, C2...)
+        df = pd.DataFrame(listas_normalizadas)
+        df.columns = [f'Campo_{i}' for i in range(max_cols)]
+        dfs_prontos[reg] = df
+        
+    return dfs_prontos
 
-def to_excel(data_dict):
-    """
-    Gera um arquivo Excel em memória com cada registro em uma aba separada.
-    """
+def to_excel(dfs_dict):
+    """Gera o Excel com abas separadas e tratamento de erros."""
     output = BytesIO()
-    # Engine xlsxwriter é ideal para manipular múltiplas abas e formatação
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for reg_id in sorted(data_dict.keys()):
-            # Criamos um DataFrame para o bloco específico
-            df = pd.DataFrame(data_dict[reg_id])
-            
-            # O Excel permite nomes de abas com no máximo 31 caracteres
+        for reg_id in sorted(dfs_dict.keys()):
+            df = dfs_dict[reg_id]
             nome_aba = f"Bloco_{reg_id}"
             
-            # Exporta para o Excel sem o índice do pandas e sem cabeçalho (padrão SPED)
-            df.to_excel(writer, sheet_name=nome_aba, index=False, header=False)
+            # Exporta para a aba
+            df.to_excel(writer, sheet_name=nome_aba, index=False)
             
-            # Ajuste automático simples da largura das colunas
+            # Formatação básica: Ajusta largura e congela o cabeçalho
             worksheet = writer.sheets[nome_aba]
+            worksheet.freeze_panes(1, 0)
             for i, col in enumerate(df.columns):
-                worksheet.set_column(i, i, 18)
+                worksheet.set_column(i, i, 15)
                 
     return output.getvalue()
 
-# --- Interface do Streamlit ---
+# --- Interface ---
+st.title("📂 Analisador Fiscal EFD")
+st.info("Otimizado para arquivos do Grupo Nascel e Auditoria Fiscal.")
 
-st.title("📂 Analisador EFD Contribuições")
-st.markdown("Converta seu arquivo TXT para Excel com abas separadas por bloco de registro.")
-
-# Upload do arquivo
-arquivo_upload = st.file_uploader("Arraste seu arquivo TXT aqui", type=["txt"])
+arquivo_upload = st.file_uploader("Selecione o arquivo DRT.txt", type=["txt"])
 
 if arquivo_upload:
-    with st.spinner('Processando os dados...'):
-        # 1. Lê e organiza os dados
+    with st.spinner('Processando estruturas fiscais...'):
         conteudo = arquivo_upload.read()
-        registros_agrupados = parse_efd_to_dict(conteudo)
+        dfs_validados = parse_efd_to_dict(conteudo)
         
-        if registros_agrupados:
-            st.success(f"Sucesso! Identificamos {len(registros_agrupados)} tipos de registros diferentes.")
+        if dfs_validados:
+            st.success(f"Arquivo lido! {len(dfs_validados)} blocos prontos para exportação.")
             
-            # 2. Prepara o Excel para download
-            dados_excel = to_excel(registros_agrupados)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.download_button(
-                    label="📥 Baixar Planilha Excel",
-                    data=dados_excel,
-                    file_name=f"Analise_{arquivo_upload.name.replace('.txt', '')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            
-            # 3. Visualização Prévia no Streamlit
-            st.divider()
-            st.subheader("Pré-visualização dos Blocos")
-            
-            escolha = st.selectbox(
-                "Selecione um registro para visualizar os dados:",
-                options=sorted(registros_agrupados.keys()),
-                format_func=lambda x: f"Registro {x}"
+            # Download
+            excel_data = to_excel(dfs_validados)
+            st.download_button(
+                label="📥 Baixar Planilha Excel Corrigida",
+                data=excel_data,
+                file_name=f"EFD_Processado_{arquivo_upload.name.replace('.txt', '')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
-            if escolha:
-                df_preview = pd.DataFrame(registros_agrupados[escolha])
-                st.dataframe(df_preview, use_container_width=True)
+            st.divider()
+            
+            # Seleção de Bloco para Visualizar
+            bloco = st.selectbox("Selecione o bloco para conferência:", sorted(dfs_validados.keys()))
+            
+            if bloco:
+                st.write(f"### Detalhes do Registro {bloco}")
+                # Exibe o DataFrame formatado
+                st.dataframe(dfs_validados[bloco], use_container_width=True)
         else:
-            st.error("Não foi possível identificar registros válidos no arquivo.")
+            st.error("Erro ao processar a estrutura do arquivo. Verifique o layout.")
